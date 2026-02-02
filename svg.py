@@ -3,6 +3,7 @@ import argparse
 import math
 import os
 import re
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
