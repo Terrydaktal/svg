@@ -191,8 +191,8 @@ def get_parser():
     ap.add_argument("--bghex", default="FF00FF", help="Key background color (default FF00FF)")
 
     # Preprocess controls
-    ap.add_argument("--alpha-cutoff", type=int, default=190,
-                    help="Alpha <= cutoff becomes background. Default 190.")
+    ap.add_argument("--alpha-cutoff", type=int, default=140,
+                    help="Alpha <= cutoff becomes background. Default 140.")
     ap.add_argument("--scale", type=int, default=8,
                     help="Upscale before mask+trace. Default 8 (try 3 if still jaggy).")
 
