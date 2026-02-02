@@ -179,7 +179,7 @@ def preprocess_flat_keyed_rgb(
 
     Image.fromarray(out, mode="RGB").save(out_png_rgb)
 
-def main():
+def get_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("input_png")
     ap.add_argument("output_svg", nargs="?", default=None)
@@ -218,10 +218,13 @@ def main():
     ap.add_argument("--splice-threshold", type=int, default=45)
     ap.add_argument("--path-precision", type=int, default=2)
 
-    args = ap.parse_args()
+    return ap
 
+def generate_svg(args):
     inp = args.input_png
-    out = args.output_svg or (os.path.splitext(inp)[0] + ".svg")
+    # If called from wrapper, we might not have output_svg set, but we need the basename for debug files
+    # If input is a file path, use it.
+    base_name = os.path.splitext(inp)[0]
 
     white_rgb = parse_hex6(args.white)
     blue_rgb  = parse_hex6(args.blue)
@@ -245,9 +248,11 @@ def main():
         )
 
         if args.save_flat:
-            debug_flat = os.path.splitext(out)[0] + ".flat.png"
+            # save next to input or output if possible
+            out_target = args.output_svg if args.output_svg else (base_name + ".svg")
+            debug_flat = os.path.splitext(out_target)[0] + ".flat.png"
             Image.open(keyed_rgb_png).save(debug_flat)
-            print(f"Wrote debug flat PNG: {debug_flat}")
+            print(f"Wrote debug flat PNG: {debug_flat}", file=sys.stderr)
 
         vtracer.convert_image_to_svg_py(
             keyed_rgb_png, raw_svg,
@@ -267,9 +272,20 @@ def main():
 
         svg_text = open(raw_svg, "r", encoding="utf-8", errors="replace").read()
         cleaned, removed, stripped = remove_key_color_from_svg(svg_text, bg_rgb, args.bg_tol)
+        
+        # We return the cleaned SVG string and some metadata stats
+        return cleaned, removed, stripped
 
-        with open(out, "w", encoding="utf-8") as f:
-            f.write(cleaned)
+def main():
+    ap = get_parser()
+    args = ap.parse_args()
+    
+    out = args.output_svg or (os.path.splitext(args.input_png)[0] + ".svg")
+    
+    cleaned, removed, stripped = generate_svg(args)
+
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(cleaned)
 
     print(f"Wrote: {out} (removed {removed} bg elems, stripped {stripped} bg strokes)")
 
