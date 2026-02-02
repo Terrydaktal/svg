@@ -7,7 +7,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import vtracer
 
@@ -49,6 +49,7 @@ def style_get(style: str, key: str):
     return None
 
 def style_set(style: str, key: str, value: str):
+    style = style or ""
     parts = []
     found = False
     for part in [p.strip() for p in style.split(";") if p.strip()]:
@@ -68,7 +69,7 @@ def style_set(style: str, key: str, value: str):
 def remove_key_color_from_svg(svg_text: str, bg_rgb, tol: float):
     """
     Remove key-colored background shapes and key-colored stroke halos.
-    With the hard-alpha preprocessing below, tol can stay low.
+    With hard mask + forced palette, tol can stay low (e.g. 3-8).
     """
     root = ET.fromstring(svg_text)
     parent = {c: p for p in root.iter() for c in p}
@@ -96,7 +97,7 @@ def remove_key_color_from_svg(svg_text: str, bg_rgb, tol: float):
                 removed += 1
             continue
 
-        # Strip bg-colored strokes (rare after hard-alpha flattening)
+        # Strip bg-colored strokes (should be rare now)
         if stroke_is_bg:
             if "stroke" in el.attrib:
                 el.set("stroke", "none")
@@ -115,50 +116,66 @@ def preprocess_flat_keyed_rgb(
     bg_rgb,
     alpha_cutoff: int,
     scale: int,
-    blue_dom_delta: int,
-    blue_min_b: int,
-    white_min: int,
+    bg_dist: int,
+    mask_blur: float,
+    morph: int,
 ):
     """
-    Turn the input into a 'traceable' RGB image:
-      - binary alpha (alpha <= cutoff => background)
-      - foreground pixels mapped to EXACTLY {white_rgb, blue_rgb}
-      - background pixels set to bg_rgb (key color)
-      - output is opaque RGB (no alpha), preventing halo creation
-
-    The classification is intentionally simple/robust:
-      - blue if B channel dominates and is sufficiently strong
-      - else white
+    Produce an opaque RGB image ready for vectorization:
+      1) Foreground mask = (alpha > alpha_cutoff) AND (color far enough from bg)
+         This works even if the PNG is fully opaque (alpha=255 everywhere).
+      2) Clean matte: blur -> threshold -> optional close (max then min)
+      3) Foreground pixels snapped to nearest of {white_rgb, blue_rgb}
+      4) Background set to bg_rgb key color
     """
 
     img = Image.open(in_png).convert("RGBA")
     if scale != 1:
         img = img.resize((img.size[0]*scale, img.size[1]*scale), Image.Resampling.LANCZOS)
 
-    arr = np.array(img, dtype=np.uint8)  # HxWx4
-    rgb = arr[..., :3].astype(np.int16)
-    a = arr[..., 3].astype(np.int16)
+    arr = np.array(img, dtype=np.uint8)
+    rgb = arr[..., :3].astype(np.int32)   # int32 avoids overflow
+    a   = arr[..., 3].astype(np.int32)
 
-    # Foreground mask: hard alpha
-    fg = a > int(alpha_cutoff)
+    bg = np.array(bg_rgb, dtype=np.int32)
+    diff = rgb - bg
+    dist2 = (diff[..., 0]*diff[..., 0] + diff[..., 1]*diff[..., 1] + diff[..., 2]*diff[..., 2])
 
-    r = rgb[..., 0]
-    g = rgb[..., 1]
-    b = rgb[..., 2]
+    fg_alpha = a > int(alpha_cutoff)
+    fg_key   = dist2 > int(bg_dist*bg_dist)
 
-    # Blue detection (cursor): B dominates max(R,G) by blue_dom_delta, and B above blue_min_b
-    max_rg = np.maximum(r, g)
-    is_blue = fg & ((b - max_rg) >= int(blue_dom_delta)) & (b >= int(blue_min_b))
+    fg = fg_alpha & fg_key
 
-    # White detection (waveform + pointer): treat everything else foreground as white.
-    # Optionally you can require a minimum whiteness for safety, but for your icon this is fine.
+    # --- matte cleanup: blur -> threshold -> optional close ---
+    mask = Image.fromarray((fg.astype(np.uint8) * 255), mode="L")
+
+    if mask_blur and mask_blur > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=float(mask_blur)))
+
+    mask = mask.point(lambda p: 255 if p >= 128 else 0)
+
+    # Close to remove tiny gaps / single-pixel jaggies (3 or 5 typical)
+    if morph and morph >= 3:
+        mask = mask.filter(ImageFilter.MaxFilter(size=int(morph))).filter(
+            ImageFilter.MinFilter(size=int(morph))
+        )
+
+    fg = (np.array(mask, dtype=np.uint8) > 0)
+
+    # --- classify to nearest palette color (robust on anti-aliased edges) ---
+    w = np.array(white_rgb, dtype=np.int32)
+    b = np.array(blue_rgb,  dtype=np.int32)
+
+    dw = ((rgb[..., 0]-w[0])**2 + (rgb[..., 1]-w[1])**2 + (rgb[..., 2]-w[2])**2)
+    db = ((rgb[..., 0]-b[0])**2 + (rgb[..., 1]-b[1])**2 + (rgb[..., 2]-b[2])**2)
+
+    is_blue  = fg & (db < dw)
     is_white = fg & ~is_blue
 
-    out = np.zeros((arr.shape[0], arr.shape[1], 3), dtype=np.uint8)
-    out[:, :] = np.array(bg_rgb, dtype=np.uint8)
-
+    out = np.empty((arr.shape[0], arr.shape[1], 3), dtype=np.uint8)
+    out[:] = np.array(bg_rgb, dtype=np.uint8)
     out[is_white] = np.array(white_rgb, dtype=np.uint8)
-    out[is_blue] = np.array(blue_rgb, dtype=np.uint8)
+    out[is_blue]  = np.array(blue_rgb,  dtype=np.uint8)
 
     Image.fromarray(out, mode="RGB").save(out_png_rgb)
 
@@ -167,30 +184,31 @@ def main():
     ap.add_argument("input_png")
     ap.add_argument("output_svg", nargs="?", default=None)
 
-    # Palette (you can change these)
+    # Palette
     ap.add_argument("--white", default="FFFFFF", help="Waveform/pointer fill (default FFFFFF)")
-    ap.add_argument("--blue", default="276EE6", help="Cursor fill (default 276EE6)")
+    ap.add_argument("--blue",  default="276EE6", help="Cursor fill (default 276EE6)")
     ap.add_argument("--bghex", default="FF00FF", help="Key background color (default FF00FF)")
 
-    # Flattening controls (this is the “do it first” part)
-    ap.add_argument("--alpha-cutoff", type=int, default=12,
-                    help="Alpha <= cutoff becomes background (hard edge). Default 12.")
-    ap.add_argument("--scale", type=int, default=6,
-                    help="Upscale before flatten+trace to smooth curves. Default 6.")
+    # Preprocess controls
+    ap.add_argument("--alpha-cutoff", type=int, default=128,
+                    help="Alpha <= cutoff becomes background. Default 128.")
+    ap.add_argument("--scale", type=int, default=2,
+                    help="Upscale before mask+trace. Default 2 (try 3 if still jaggy).")
 
-    # Blue classifier knobs (tune if cursor misclassifies)
-    ap.add_argument("--blue-dom-delta", type=int, default=25,
-                    help="Blue if B - max(R,G) >= delta. Default 25.")
-    ap.add_argument("--blue-min-b", type=int, default=80,
-                    help="Blue if B >= this. Default 80.")
+    ap.add_argument("--bg-dist", type=int, default=35,
+                    help="Background key distance in RGB units. Higher = tighter cut. Default 35.")
+    ap.add_argument("--mask-blur", type=float, default=0.8,
+                    help="Gaussian blur radius for matte smoothing (after scaling). Default 0.8.")
+    ap.add_argument("--morph", type=int, default=3,
+                    help="Morphological close filter size (0 disables). Typical: 3 or 5. Default 3.")
 
     # SVG bg removal
     ap.add_argument("--bg-tol", type=float, default=5.0,
-                    help="Tolerance for removing bg color from SVG. With flat fills, keep low. Default 5.")
+                    help="Tolerance for removing bg color from SVG. Default 5.")
     ap.add_argument("--save-flat", action="store_true",
                     help="Also write a debug flat RGB PNG next to the SVG ('.flat.png').")
 
-    # VTracer params (keep moderate; flat input = clean output)
+    # VTracer params
     ap.add_argument("--hierarchical", default="cutout", choices=["stacked", "cutout"])
     ap.add_argument("--mode", default="spline", choices=["spline", "polygon", "none"])
     ap.add_argument("--filter-speckle", type=int, default=16)
@@ -221,9 +239,9 @@ def main():
             bg_rgb=bg_rgb,
             alpha_cutoff=args.alpha_cutoff,
             scale=args.scale,
-            blue_dom_delta=args.blue_dom_delta,
-            blue_min_b=args.blue_min_b,
-            white_min=200,
+            bg_dist=args.bg_dist,
+            mask_blur=args.mask_blur,
+            morph=args.morph,
         )
 
         if args.save_flat:
@@ -242,7 +260,7 @@ def main():
             max_iterations=args.max_iterations,
             splice_threshold=args.splice_threshold,
             path_precision=args.path_precision,
-            # These two matter less now because we’ve already forced a 3-color image:
+            # Already forced palette, these matter less now:
             color_precision=8,
             layer_difference=64,
         )
