@@ -190,17 +190,17 @@ def get_parser():
     ap.add_argument("--bghex", default="FF00FF", help="Key background color (default FF00FF)")
 
     # Preprocess controls
-    ap.add_argument("--alpha-cutoff", type=int, default=128,
-                    help="Alpha <= cutoff becomes background. Default 128.")
-    ap.add_argument("--scale", type=int, default=2,
-                    help="Upscale before mask+trace. Default 2 (try 3 if still jaggy).")
+    ap.add_argument("--alpha-cutoff", type=int, default=190,
+                    help="Alpha <= cutoff becomes background. Default 190.")
+    ap.add_argument("--scale", type=int, default=8,
+                    help="Upscale before mask+trace. Default 8 (try 3 if still jaggy).")
 
     ap.add_argument("--bg-dist", type=int, default=35,
                     help="Background key distance in RGB units. Higher = tighter cut. Default 35.")
-    ap.add_argument("--mask-blur", type=float, default=0.8,
-                    help="Gaussian blur radius for matte smoothing (after scaling). Default 0.8.")
-    ap.add_argument("--morph", type=int, default=3,
-                    help="Morphological close filter size (0 disables). Typical: 3 or 5. Default 3.")
+    ap.add_argument("--mask-blur", type=float, default=1.1,
+                    help="Gaussian blur radius for matte smoothing (after scaling). Default 1.1.")
+    ap.add_argument("--morph", type=int, default=5,
+                    help="Morphological close filter size (0 disables). Typical: 3 or 5. Default 5.")
 
     # SVG bg removal
     ap.add_argument("--bg-tol", type=float, default=5.0,
@@ -211,12 +211,12 @@ def get_parser():
     # VTracer params
     ap.add_argument("--hierarchical", default="cutout", choices=["stacked", "cutout"])
     ap.add_argument("--mode", default="spline", choices=["spline", "polygon", "none"])
-    ap.add_argument("--filter-speckle", type=int, default=16)
-    ap.add_argument("--corner-threshold", type=int, default=80)
-    ap.add_argument("--length-threshold", type=float, default=10.0)
+    ap.add_argument("--filter-speckle", type=int, default=64)
+    ap.add_argument("--corner-threshold", type=int, default=60)
+    ap.add_argument("--length-threshold", type=float, default=40.0)
     ap.add_argument("--max-iterations", type=int, default=10)
-    ap.add_argument("--splice-threshold", type=int, default=45)
-    ap.add_argument("--path-precision", type=int, default=2)
+    ap.add_argument("--splice-threshold", type=int, default=80)
+    ap.add_argument("--path-precision", type=int, default=0)
 
     return ap
 
